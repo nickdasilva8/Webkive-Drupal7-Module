@@ -1,0 +1,250 @@
+<?php
+
+//debugging
+// ini_set('display_errors', 1);
+// ini_set('display_startup_errors', 1);
+// error_reporting(E_ALL);
+
+
+
+/**
+ * Implements hook_node_insert 
+ * This is called when a new node is created, regardless of content type
+ */
+function webkive_node_insert($node){
+  watchdog ("Webkive insert", "node_insert was called by wayback");
+  // dsm(curl_post(webkive_final_array($node)), "curl info?");
+  curl_post_node(webkive_final_array($node));
+}
+
+/**
+ * Implemented hook_node_update()
+ * This is called when a node is updated (editing a page & saving)
+ */
+function webkive_node_update($node){
+  // dsm($GLOBALS['base_url'],"base url");
+  watchdog ("Webkive update", "node_update was called by wayback");
+  curl_post_node(webkive_final_array($node));
+}
+
+/**
+ * Implemented hook_node_delete()
+ * This is called when a node is updated (editing a page & saving)
+ */
+function webkive_node_delete($node){
+  watchdog ("Webkive delete", "node_delete was called by wayback");
+  curl_post_node(webkive_final_array($node));
+}
+
+/**
+ * Implemented hook_cron()
+ * This is called when cron runs.
+ */
+function webkive_cron(){
+  curl_post_css();
+}
+/*-------------------------------------------------------------*/
+
+
+/**
+ * Used for testing on any form
+ */
+function webkive_final_array($node){
+
+  //converts $node into html
+  try {
+    $render_array = node_view($node);
+    $output = drupal_render($render_array);
+  } catch (Exception $e){
+     watchdog ("Webkive", $e);
+  }
+  //converts timestamp to d/m/Y H:i:s format
+  $date_created = date('d/m/Y H:i:s', $node->created);
+  $date_changed =  date('d/m/Y H:i:s', $node->changed);
+
+  //returns an array of arrays with key value pairs for paths of the node
+  $path_test = $node->path;
+  reset($path_test);
+    
+  foreach($path_test as $key => $value){
+    if ($key == "source" || $key == "alias"){
+      if ($key == "source" && $value == null){
+        $key_val_pairs[$key] = create_default_source($node);
+      } else if ($key == "alias" && $value == null){
+        $key_val_pairs[$key] = "Not available on node create or delete.";
+      } else {
+        $key_val_pairs[$key] = $value;
+      }
+    } else {
+      $other_path_info[$key] = $value;
+    }
+  }
+
+  //used to check state of node
+  $status = ($node->status == 1 ? "published" : "unpublished");
+
+  //creates the array of information that will be passed through to the API
+  $node_update['node_information'] = array(
+    'uuid' => $node->original->uuid,
+    'nid' => $node->nid,
+    'title' => $node->title,
+    'content_type' => $node->type,
+    'status' => $status,
+    'timestamp_created' => $node->created,
+    'timestamp_changed' => $node->changed,
+    // $_POST
+  );
+
+  //If path array is not empty, this if statement will assign information between two different paths.
+  if (isset($path_test)){
+    if (isset($key_val_pairs)){
+      $node_update['path_information'] = array (
+        'key_information' => $key_val_pairs,
+        'other_information' => $other_path_info
+      );
+    } else if (isset($other_path_info)){
+      $manual_key_val_pairs['alias'] = 'Not available on node create or delete.';
+      $manual_key_val_pairs['source'] = create_default_source($node);
+
+      $node_update['path_information'] = array (
+        'key_information' => $manual_key_val_pairs,
+        'other_information' => $other_path_info
+      );
+    }
+  }
+  //strips the html, removing \n and \r
+  $stripped_full_html = preg_replace("!\r?\n!", "", getHTMLofNode($node));
+  $stripped_node_html = preg_replace("!\r?\n!", "", $output);
+  
+
+
+  //Adds the HTML structure of the node to the array.
+  $node_update['html_structure'] = array(
+    'full_html' => $stripped_full_html,
+    'node_html' => $stripped_node_html,
+  );
+
+  //retrieves array list of css files that the node is using.
+  $css_list = drupal_add_css();
+  $i = 1;
+  $css_file_content = "";
+  $css_info = [];
+  foreach($css_list as $key => $value){
+    // $css_path["css_file_" . $i] = $file[$key];
+    $css_file_content = file_get_contents($key, FILE_USE_INCLUDE_PATH);
+    // $css_striiped = 
+    $css_info["css_file_" . $i] = array(
+      "file" => $key,
+      "css_file_id" => "",
+      "css" => preg_replace("!\r?\n!", "", $css_file_content),
+    );
+    $i ++;
+  }
+  //adds css info to the array
+  $node_update['css_information'] = $css_info;
+  //adds the type to the array
+  $node_update['type'] = "node";
+  // dsm($css_info, "Css info");
+  // dsm($node, "Node information");
+  dsm($node_update, "node_update information---: ");
+
+  return $node_update;
+}
+
+/**
+ * Creates the node path, which isn't available by default for create and delete nodes
+ */
+function create_default_source($node){
+  $manual_path = "node/" . $node->nid;
+  return $manual_path;
+}
+
+/**
+ * returns the FULL HTML of the current node, including <html> and <head> tags.
+ */
+function getHTMLofNode($node){
+
+  $curl_handle=curl_init();
+  curl_setopt($curl_handle, CURLOPT_URL, $GLOBALS['base_url'] . '/' . create_default_source($node) . ' format=flv');
+  curl_setopt($curl_handle, CURLOPT_CONNECTTIMEOUT, 2);
+  curl_setopt($curl_handle, CURLOPT_RETURNTRANSFER, 1);
+  curl_setopt($ch,CURLOPT_USERPWD,"olamalu:0lamalu*1");
+  curl_setopt($curl_handle, CURLOPT_USERAGENT, 'wayback');
+  $query = curl_exec($curl_handle);
+  curl_close($curl_handle);
+
+  return $query;
+}
+
+function getHTMLBody($node){
+  $curl_handle=curl_init();
+  curl_setopt($curl_handle, CURLOPT_URL, $GLOBALS['base_url'] . '/' . create_default_source($node) . ' format=flv');
+  curl_setopt($curl_handle, CURLOPT_CONNECTTIMEOUT, 2);
+  curl_setopt($curl_handle, CURLOPT_RETURNTRANSFER, true);
+  curl_setopt($curl_handle, CURLOPT_USERAGENT, 'wayback');
+  $query = curl_exec($curl_handle);
+  curl_close($curl_handle);
+
+  return $query;
+}
+
+
+/*
+ *  POST of the array using cURL
+ */
+function curl_post_node($node_update){
+
+  $node_update_json = json_encode($node_update);
+  // dsm($node_update_json, "this is the json file 1");
+  //url where the json will be POSTED to
+  $curl_handler = curl_init('orac.local:9091/RzfrQOUX');
+  curl_setopt($curl_handler, CURLOPT_HEADER, true);
+  curl_setopt($curl_handler, CURLOPT_CUSTOMREQUEST, 'POST');
+  curl_setopt($curl_handler, CURLOPT_RETURNTRANSFER, false);
+  //the connectiontimeout is set to 50 (default 300) to cut the connection, so the page doesn't wait for a response.
+  curl_setopt($curl_handler, CURLOPT_CONNECTTIMEOUT, 50);
+  curl_setopt($curl_handler, CURLOPT_HTTPHEADER, array(
+    'Content-Type: application/json',
+    'Content-Length: ' . strlen($node_update_json)));
+  curl_setopt($curl_handler, CURLOPT_POSTFIELDS, $node_update_json);
+
+  curl_exec($curl_handler);
+  curl_close($curl_handler);
+}
+
+/*
+ *  POST of the array using cURL
+ */
+function curl_post_css(){
+  $css_list = drupal_add_css();
+
+  foreach($css_list as $key => $value){
+    $css = file_get_contents($key, FILE_USE_INCLUDE_PATH);
+    $css_info[$key] = $css;
+  }
+  //strips the html, removing \n and \r
+  $css_info_stripped = preg_replace("!\r?\n!", "", $css_info);
+
+  $css_array["css_information"] = array(
+    'date' => date('d/m/Y H:i:s'),
+    'css' => $css_info_stripped,
+  );
+
+  $css_array['type'] ="asset";
+  $css_info_json = json_encode($css_array);
+
+  // dsm($css_array, "CSS JSON file: ");
+  //url where the json will be POSTED to
+  $curl_handler = curl_init('orac.local:9091/RzfrQOUX');
+  curl_setopt($curl_handler, CURLOPT_HEADER, true);
+  curl_setopt($curl_handler, CURLOPT_CUSTOMREQUEST, 'POST');
+  curl_setopt($curl_handler, CURLOPT_RETURNTRANSFER, true);
+  curl_setopt($curl_handler, CURLOPT_HTTPHEADER, array(
+    'Content-Type: application/json',
+    'Content-Length: ' . strlen($css_info_json)));
+  curl_setopt($curl_handler, CURLOPT_POSTFIELDS, $css_info_json);
+
+  curl_exec($curl_handler);
+  curl_close($curl_handler);
+}
+
